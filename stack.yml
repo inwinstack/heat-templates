@@ -1,40 +1,32 @@
 ---
 heat_template_version: 2015-10-15
-description: "Kubeadm template"
-
+description: A template to deploy the Kubernetes cluster
 parameters:
-
-  node_count:
-    label: "Node Count"
-    description: "Node Count"
-    type: number
-    default: 2
-
-  lab_repo:
-    label: "Template repo"
-    description: "Template repo"
+  image:
     type: string
+    description: Image used for servers
+  flavor:
+    type: string
+    description: Flavor used by the servers
+  security_group_name:
+    type: string
+    description: Security group used by the servers
+  private_net:
+    type: string
+    description: Network used by the servers
+  public_net:
+    type: string
+    description: Public IP used by the servers
+  ansible_repo:
+    type: string
+    description: "Kubernetes ansible playbook repo"
     default: "https://github.com/kairen/heat-k8s-template.git"
 
-  lab_repo_version:
-    label: "Template repo version"
-    description: "Template repo version"
-    type: string
-    default: "v1.0.2"
-
 resources:
-
   prefix:
     type: OS::Heat::TestResource
     properties:
       value: { get_param: "OS::stack_name" }
-      # value: { str_split : ["-", { get_param: "OS::stack_id" }, 0] }
-
-  password:
-    type: OS::Heat::RandomString
-    properties:
-      length: 8
-      sequence: lettersdigits
 
   keypair:
     type: OS::Nova::KeyPair
@@ -46,7 +38,7 @@ resources:
           params:
             "%prefix%": { get_attr: [prefix, output] }
 
-  server_master_node:
+  k8s_master_node:
     type: OS::Nova::Server
     properties:
       name:
@@ -54,17 +46,18 @@ resources:
           template: "%prefix%-master"
           params:
             "%prefix%": { get_attr: [prefix, output] }
-      flavor: "m1.medium"
-      image: "ubuntu16.04"
-      admin_pass: { get_resource: password }
+      image: { get_param: image }
       key_name: { get_resource: keypair }
+      flavor: { get_param: flavor }
       networks:
-        - { uuid: bc6b61a7-df3f-420e-8f72-5524269b851e }
+      - network: { get_param: private_net }
+      security_groups:
+      - get_param: security_group_name
 
-  server_worker_nodes:
+  k8s_worker_nodes:
     type: OS::Heat::ResourceGroup
     properties:
-      count: { get_param: node_count }
+      count: 2
       resource_def:
         type: OS::Nova::Server
         properties:
@@ -73,12 +66,13 @@ resources:
               template: "%prefix%-worker-%index%"
               params:
                 "%prefix%": { get_attr: [prefix, output] }
-          flavor: "m1.medium"
-          image: "ubuntu16.04"
-          admin_pass: { get_resource: password }
+          image: { get_param: image }
           key_name: { get_resource: keypair }
+          flavor: { get_param: flavor }
           networks:
-            - { uuid: bc6b61a7-df3f-420e-8f72-5524269b851e }
+          - network: { get_param: private_net }
+          security_groups:
+          - get_param: security_group_name
 
   swift_signal_handle:
     type: OS::Heat::SwiftSignalHandle
@@ -94,23 +88,11 @@ resources:
     type: OS::Heat::CloudConfig
     properties:
       cloud_config:
-        bootcmd:
-          - sleep 15
-        packages:
-          - tmux
-          - multitail
-          - git
-          - gcc
-          - make
-          - libssl-dev
-          - libffi-dev
-          - python-dev
-          - python-virtualenv
         write_files:
-          - path: "/opt/cloud-training/id_rsa"
+          - path: "/opt/k8s/id_rsa"
             permissions: "0600"
             content: { get_attr: [keypair, private_key] }
-          - path: "/opt/cloud-training/hosts.j2"
+          - path: "/opt/k8s/hosts.j2"
             permissions: "0600"
             content: |
               [all]
@@ -119,68 +101,66 @@ resources:
               worker-{{ loop.index0 }} ansible_ssh_host={{ worker_node_ip_address }}
               {% endfor %}
 
-              [master]
+              [masters]
               master
 
-              [worker]
+              [nodes]
               {% for worker_node_ip_address in worker_nodes_ip_address %}
               worker-{{ loop.index0 }}
               {% endfor %}
-          - path: "/opt/cloud-training/environment.yaml"
+          - path: "/opt/k8s/environment.yaml"
             permissions: "0600"
             content:
               str_replace:
                 template: |
                   ---
                   master_node_ip_address: "%master_node_ip_address%"
+                  master_node_floating_ip: "%master_node_floating_ip%"
                   worker_nodes_ip_address: %worker_nodes_ip_address%
                 params:
-                  "%master_node_ip_address%": { get_attr: [server_master_node, accessIPv4] }
-                  "%worker_nodes_ip_address%": { get_attr: [server_worker_nodes, accessIPv4] }
-          - path: "/opt/cloud-training/runcmd-bash"
+                  "%master_node_ip_address%": { get_attr: [k8s_master_node, first_address] }
+                  "%master_node_floating_ip%": { get_attr: [floating_ip, floating_ip_address] }
+                  "%worker_nodes_ip_address%": { get_attr: [k8s_worker_nodes, first_address] }
+          - path: "/opt/k8s/runcmd-bash"
             permissions: "0700"
             content:
               str_replace:
                 template: |
                   #!/bin/bash
-                  export HOME="/root"
-                  set -e
-                  set -x
+
                   function exit_failure {
                     %swift_signal_notify% --data-binary '{"status": "FAILURE", "reason": "'"$@"'"}'
                     exit 1
                   }
+
                   function exit_success {
                     %swift_signal_notify% --data-binary '{"status": "SUCCESS"}'
                   }
-                  git clone %lab_repo% /opt/cloud-training/lab || exit_failure "Git Clone - %lab_repo%"
-                  cd /opt/cloud-training/lab
-                  git checkout %lab_repo_version% || exit_failure "Git Checkout - %lab_repo_version%"
-                  cd /opt/cloud-training/lab/ansible
-                  virtualenv .venv || exit_failure "Create Virtual Environment"
-                  source .venv/bin/activate || exit_failure "Activate Virtual Environment"
-                  pip install -r requirements.txt || exit_failure "PIP Install Requirements"
-                  ansible localhost -e @/opt/cloud-training/environment.yaml -m template -a "src=/opt/cloud-training/hosts.j2 dest=/opt/cloud-training/hosts" || exit_failure "Ansible Inventory Template"
+
+                  sudo apt-add-repository -y ppa:ansible/ansible || exit_failure "Ansible key added apt"
+                  sudo apt-get update && sudo apt-get install -y ansible || exit_failure "Ansible apt install"
+
+                  git clone %ansible_repo% /opt/k8s/heat-k8s-template || exit_failure "Git Clone - %ansible_repo%"
+                  cd /opt/k8s/heat-k8s-template/ansible
+
+                  ansible localhost -e @/opt/k8s/environment.yaml \
+                    -m template \
+                    -a "src=/opt/k8s/hosts.j2 \
+                    dest=/opt/k8s/hosts.ini" || exit_failure "Ansible Inventory Template"
+
+                  # Run ansible playbook to install kubernetes
                   ansible-playbook playbook.yaml -vv || exit_failure "Ansible Playbook Run"
+
                   exit_success
                 params:
                   "%swift_signal_notify%": { get_attr: [swift_signal_handle, curl_cli] }
-                  "%lab_repo%": { get_param: lab_repo }
-                  "%lab_repo_version%": { get_param: lab_repo_version }
         runcmd:
-          - tmux new-session -s runcmd -n runcmd-bash -d
-          - tmux new-window -n runcmd-bash-logs
-          - tmux select-window -t runcmd-bash-logs
-          - tmux send-keys "touch /opt/cloud-training/runcmd-bash.err /opt/cloud-training/runcmd-bash.log" C-m
-          - tmux send-keys "multitail /opt/cloud-training/runcmd-bash.err /opt/cloud-training/runcmd-bash.log" C-m
-          - tmux select-window -t runcmd-bash
-          - tmux send-keys "/opt/cloud-training/runcmd-bash >> /opt/cloud-training/runcmd-bash.log 2>> /opt/cloud-training/runcmd-bash.err" C-m
-          - tmux select-window -t runcmd-bash-logs
+          - ./opt/k8s/runcmd-bash
 
-  server_ansible:
+  kube_ansible_deploy:
     depends_on:
-      - server_master_node
-      - server_worker_nodes
+      - k8s_master_node
+      - k8s_worker_nodes
     type: OS::Nova::Server
     properties:
       name:
@@ -188,34 +168,37 @@ resources:
           template: "%prefix%-ansible"
           params:
             "%prefix%": { get_attr: [prefix, output] }
-      flavor: "m1.small"
-      image: "ubuntu16.04"
-      admin_pass: { get_resource: password }
+      image: { get_param: image }
       key_name: { get_resource: keypair }
+      flavor: { get_param: flavor }
       networks:
-        - { uuid: bc6b61a7-df3f-420e-8f72-5524269b851e }
-      config_drive: True
+      - network: { get_param: private_net }
+      security_groups:
+      - get_param: security_group_name
       user_data_format: RAW
       user_data: { get_resource: cloud_config_ansible }
 
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: { get_param: public_net }
+
+  floating_ip_association:
+    type: OS::Nova::FloatingIPAssociation
+    properties:
+      floating_ip: { get_resource: floating_ip }
+      server_id: { get_resource: k8s_master_node }
+
 outputs:
-
-  password:
-    description: "Password"
-    value: { get_resource: password }
-
+  master_ip:
+    description: IP address of master
+    value: { get_attr: [k8s_master_node, first_address] }
+  workers_ip:
+    description: IP address of workers
+    value: { get_attr: [k8s_worker_nodes, first_address] }
+  floating_ip:
+    description: Floating IP of master
+    value: { get_attr: [floating_ip, floating_ip_address] }
   private_key:
-    description: "Private Key"
+    description: Private key of all nodes
     value: { get_attr: [keypair, private_key] }
-
-  ansible_ip_address:
-    description: "Ansible IP Address"
-    value: { get_attr: [server_ansible, accessIPv4] }
-
-  master_node_ip_address:
-    description: "Master Node IP Address"
-    value: { get_attr: [server_master_node, accessIPv4] }
-
-  worker_nodes_ip_address:
-    description: "Worker Nodes IP Address"
-    value: { get_attr: [server_worker_nodes, accessIPv4] }
