@@ -1,4 +1,5 @@
 ---
+  
 heat_template_version: 2015-10-15
 description: A template to deploy the Kubernetes cluster
 parameters:
@@ -17,10 +18,18 @@ parameters:
   public_net:
     type: string
     description: Public IP used by the servers
-  ansible_repo:
+  ansible_user:
+    type: string
+    description: "Ansible SSH user name"
+    default: ubuntu
+  kube_ansible_repo:
     type: string
     description: "Kubernetes ansible playbook repo"
-    default: "https://github.com/kairen/heat-k8s-template.git"
+    default: "https://github.com/kairen/kube-ansible.git"
+  kube_version:
+    type: string
+    description: "Kubernetes version"
+    default: 1.11.2
 
 resources:
   prefix:
@@ -93,21 +102,31 @@ resources:
             permissions: "0600"
             content: { get_attr: [keypair, private_key] }
           - path: "/opt/k8s/hosts.j2"
-            permissions: "0600"
-            content: |
-              [all]
-              master ansible_ssh_host={{ master_node_ip_address }}
-              {% for worker_node_ip_address in worker_nodes_ip_address %}
-              worker-{{ loop.index0 }} ansible_ssh_host={{ worker_node_ip_address }}
-              {% endfor %}
+            permissions: "0644"
+            content:
+              str_replace:
+                template: |
+                  [all]
+                  master ansible_ssh_host={{ master_node_ip_address }} ansible_user="%ansible_user%"
+                  {% for worker_node_ip_address in worker_nodes_ip_address %}
+                  worker-{{ loop.index0 }} ansible_ssh_host={{ worker_node_ip_address }} ansible_user="%ansible_user%"
+                  {% endfor %}
 
-              [masters]
-              master
+                  [etcds]
+                  master
 
-              [nodes]
-              {% for worker_node_ip_address in worker_nodes_ip_address %}
-              worker-{{ loop.index0 }}
-              {% endfor %}
+                  [masters]
+                  master
+
+                  [nodes]
+                  {% for worker_node_ip_address in worker_nodes_ip_address %}
+                  worker-{{ loop.index0 }}
+                  {% endfor %}
+                  [kube-cluster:children]
+                  masters
+                  nodes
+                params:
+                  "%ansible_user%": { get_param: ansible_user }
           - path: "/opt/k8s/environment.yaml"
             permissions: "0600"
             content:
@@ -121,12 +140,53 @@ resources:
                   "%master_node_ip_address%": { get_attr: [k8s_master_node, first_address] }
                   "%master_node_floating_ip%": { get_attr: [floating_ip, floating_ip_address] }
                   "%worker_nodes_ip_address%": { get_attr: [k8s_worker_nodes, first_address] }
+          - path: "/opt/k8s/all.yml"
+            permissions: "0644"
+            content:
+              str_replace:
+                template: |
+                  ---
+                  kube_version: "%kube_version%"
+
+                  vip_address: "%master_node_floating_ip%"
+                  lb_secure_port: 6443
+
+                  enable_keepalived: false
+                  enable_haproxy: false
+                  enable_dashboard: true
+                params:
+                  "%master_node_floating_ip%": { get_attr: [floating_ip, floating_ip_address] }
+                  "%kube_version%": { get_param: kube_version }
+          - path: "/opt/k8s/ansible.cfg"
+            permissions: "0644"
+            content: |
+              [ssh_connection]
+              ssh_args = -o ControlMaster=auto -o ControlPersist=30m -o ConnectionAttempts=100 -o UserKnownHostsFile=/dev/null
+              pipelining = True
+
+              [defaults]
+              roles_path = ./roles
+              remote_tmp = $HOME/.ansible/tmp
+              local_tmp  = $HOME/.ansible/tmp
+              gathering = smart
+              private_key_file=/opt/k8s/id_rsa
+              fact_caching = jsonfile
+              fact_caching_connection = /tmp/facts_cache
+              host_key_checking = False
+              stdout_callback = skippy
+              deprecation_warnings = False
+              inventory_ignore_extensions = ~, .orig, .bak, .ini, .cfg, .retry, .pyc, .pyo, .creds
+              become = True
+              host_key_checking = False
+              callback_whitelist = profile_tasks
           - path: "/opt/k8s/runcmd-bash"
             permissions: "0700"
             content:
               str_replace:
                 template: |
                   #!/bin/bash
+
+                  set -ux
 
                   function exit_failure {
                     %swift_signal_notify% --data-binary '{"status": "FAILURE", "reason": "'"$@"'"}'
@@ -140,20 +200,22 @@ resources:
                   sudo apt-add-repository -y ppa:ansible/ansible || exit_failure "Ansible key added apt"
                   sudo apt-get update && sudo apt-get install -y ansible || exit_failure "Ansible apt install"
 
-                  git clone %ansible_repo% /opt/k8s/heat-k8s-template || exit_failure "Git Clone - %ansible_repo%"
-                  cd /opt/k8s/heat-k8s-template/ansible
+                  git clone %kube_ansible_repo% /opt/k8s/kube-ansible || exit_failure "Git Clone - %kube_ansible_repo%"
+                  cd /opt/k8s/kube-ansible
 
-                  ansible localhost -e @/opt/k8s/environment.yaml \
-                    -m template \
-                    -a "src=/opt/k8s/hosts.j2 \
-                    dest=/opt/k8s/hosts.ini" || exit_failure "Ansible Inventory Template"
+                  # copy and generate config
+                  sudo cp -r /opt/k8s/ansible.cfg ansible.cfg
+                  sudo cp -r /opt/k8s/all.yml inventory/group_vars/all.yml
+                  ansible localhost -e @/opt/k8s/environment.yaml -m template \
+                    -a "src=/opt/k8s/hosts.j2 dest=inventory/hosts.ini" || exit_failure "Generate Ansible Inventory"
 
-                  # Run ansible playbook to install kubernetes
-                  ansible-playbook playbook.yaml -vv || exit_failure "Ansible Playbook Run"
+                  # run playbook
+                  ansible-playbook -i inventory/hosts.ini cluster.yml || exit_failure "Run Ansible Playbook"
 
                   exit_success
                 params:
                   "%swift_signal_notify%": { get_attr: [swift_signal_handle, curl_cli] }
+                  "%kube_ansible_repo%": { get_param: kube_ansible_repo }
         runcmd:
           - ./opt/k8s/runcmd-bash
 
@@ -190,6 +252,13 @@ resources:
       server_id: { get_resource: k8s_master_node }
 
 outputs:
+  kube_apiserver_addr:
+    description: Kubernetes API Server Address
+    value:
+      str_replace:
+        template: https://host:6443
+        params:
+          host: { get_attr: [floating_ip, floating_ip_address] }
   master_ip:
     description: IP address of master
     value: { get_attr: [k8s_master_node, first_address] }

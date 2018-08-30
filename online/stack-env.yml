@@ -1,5 +1,5 @@
 parameters:
-  image: ubuntu16.04
+  image: k8s-ubuntu-16.04
   flavor: m1.small
   security_group_name: 86f48a0b-99f8-41ed-8a24-ed69d8deeeef
   private_net: 95be5d06-b6e7-4571-8998-7ea9ca21a384
