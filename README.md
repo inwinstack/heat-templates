@@ -28,17 +28,16 @@ EOF
 $ source openrc
 ```
 
-Set the variables in `stack-env.yml` to reflect you need options:
+Set the variables in `env.yml` to reflect you need options:
 ```yaml
 parameters:
-  image: ubuntu16.04
+  image: ubuntu-16.04-server
   flavor: m1.small
-  security_group_name: 86f48a0b-99f8-41ed-8a24-ed69d8deeeef
   private_net: 95be5d06-b6e7-4571-8998-7ea9ca21a384
   public_net: b164fae0-3dc3-4309-b464-a08d8aab8fef
 ```
 
 Now, just execute the following command to create the stack:
 ```sh
-$ openstack stack create k8s -t stack.yml -e stack-env.yml
+$ openstack stack create k8s -t online-stack.yml -e env.yml
 ```

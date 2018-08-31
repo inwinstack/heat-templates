@@ -1,5 +1,5 @@
 ---
-  
+
 heat_template_version: 2015-10-15
 description: A template to deploy the Kubernetes cluster
 parameters:
@@ -9,9 +9,6 @@ parameters:
   flavor:
     type: string
     description: Flavor used by the servers
-  security_group_name:
-    type: string
-    description: Security group used by the servers
   private_net:
     type: string
     description: Network used by the servers
@@ -37,6 +34,28 @@ resources:
     properties:
       value: { get_param: "OS::stack_name" }
 
+  base_k8s_sg:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name:
+        str_replace:
+          template: "%prefix%-base_k8s_sg"
+          params:
+            "%prefix%": { get_attr: [prefix, output] }
+      description: Base security group for Kubernetes node
+      rules:
+        - direction: egress
+          ethertype: IPv4
+        - direction: egress
+          ethertype: IPv6
+        - protocol: icmp
+        - protocol: tcp
+          port_range_min: 6443
+          port_range_max: 6443
+        - protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+
   keypair:
     type: OS::Nova::KeyPair
     properties:
@@ -46,22 +65,6 @@ resources:
           template: "%prefix%-keypair"
           params:
             "%prefix%": { get_attr: [prefix, output] }
-
-  k8s_master_node:
-    type: OS::Nova::Server
-    properties:
-      name:
-        str_replace:
-          template: "%prefix%-master"
-          params:
-            "%prefix%": { get_attr: [prefix, output] }
-      image: { get_param: image }
-      key_name: { get_resource: keypair }
-      flavor: { get_param: flavor }
-      networks:
-      - network: { get_param: private_net }
-      security_groups:
-      - get_param: security_group_name
 
   k8s_worker_nodes:
     type: OS::Heat::ResourceGroup
@@ -81,7 +84,7 @@ resources:
           networks:
           - network: { get_param: private_net }
           security_groups:
-          - get_param: security_group_name
+          - get_resource: base_k8s_sg
 
   swift_signal_handle:
     type: OS::Heat::SwiftSignalHandle
@@ -133,11 +136,9 @@ resources:
               str_replace:
                 template: |
                   ---
-                  master_node_ip_address: "%master_node_ip_address%"
                   master_node_floating_ip: "%master_node_floating_ip%"
                   worker_nodes_ip_address: %worker_nodes_ip_address%
                 params:
-                  "%master_node_ip_address%": { get_attr: [k8s_master_node, first_address] }
                   "%master_node_floating_ip%": { get_attr: [floating_ip, floating_ip_address] }
                   "%worker_nodes_ip_address%": { get_attr: [k8s_worker_nodes, first_address] }
           - path: "/opt/k8s/all.yml"
@@ -204,6 +205,7 @@ resources:
                   cd /opt/k8s/kube-ansible
 
                   # copy and generate config
+                  echo "master_node_ip_address: $(ip route get 8.8.8.8 | awk '{print $NF; exit}')" | sudo tee -a /opt/k8s/environment.yaml
                   sudo cp -r /opt/k8s/ansible.cfg ansible.cfg
                   sudo cp -r /opt/k8s/all.yml inventory/group_vars/all.yml
                   ansible localhost -e @/opt/k8s/environment.yaml -m template \
@@ -219,15 +221,14 @@ resources:
         runcmd:
           - ./opt/k8s/runcmd-bash
 
-  kube_ansible_deploy:
+  k8s_master_node:
     depends_on:
-      - k8s_master_node
       - k8s_worker_nodes
     type: OS::Nova::Server
     properties:
       name:
         str_replace:
-          template: "%prefix%-ansible"
+          template: "%prefix%-master"
           params:
             "%prefix%": { get_attr: [prefix, output] }
       image: { get_param: image }
@@ -236,7 +237,7 @@ resources:
       networks:
       - network: { get_param: private_net }
       security_groups:
-      - get_param: security_group_name
+      - get_resource: base_k8s_sg
       user_data_format: RAW
       user_data: { get_resource: cloud_config_ansible }
 
