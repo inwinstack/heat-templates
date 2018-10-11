@@ -14,7 +14,7 @@ sudo add-apt-repository \
 curl -s "https://packages.cloud.google.com/apt/doc/apt-key.gpg" | sudo apt-key add -
 echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
 
-export KUBE_VERSION="1.11.2"
+export KUBE_VERSION="1.11.3"
 sudo apt-get update && sudo apt-get install -y \
   kubelet=${KUBE_VERSION}-00 \
   kubeadm=${KUBE_VERSION}-00 \

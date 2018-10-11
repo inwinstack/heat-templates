@@ -13,7 +13,10 @@ fi
 pip install diskimage-builder
 
 export DIB_RELEASE=xenial
-# export ELEMENTS_PATH=./elements
+export ELEMENTS_PATH=./elements
 
 # build image using diskimage-builder
-disk-image-create -a amd64 -o ubuntu-16.04-server vm ubuntu -p python
+disk-image-create -a amd64 \
+  -o ubuntu-16.04-server \
+  -p python \
+  vm ubuntu kubernetes ansible 
