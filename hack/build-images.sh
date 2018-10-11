@@ -20,3 +20,17 @@ disk-image-create -a amd64 \
   -o ubuntu-16.04-server \
   -p python \
   vm ubuntu kubernetes ansible 
+
+
+# disk-image-create vm \
+#     ubuntu \
+#     heat-config \
+#     os-collect-config \
+#     os-refresh-config \
+#     os-apply-config \
+#     heat-config-cfn-init \
+#     heat-config-puppet \
+#     heat-config-script \
+#     -a amd64 \
+#     -p python \
+#     -o ubuntu-16.04-server
