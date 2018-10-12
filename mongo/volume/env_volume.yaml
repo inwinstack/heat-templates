@@ -1,0 +1,7 @@
+parameter_defaults:
+  key_name: undercloud
+  flavor: disk-medium
+  image: heat-image
+  private_net: private
+  slave_count: 2
+  volume_size: 40
