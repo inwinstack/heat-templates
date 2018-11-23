@@ -3,32 +3,41 @@
 heat_template_version: ocata
 description: A template to deploy the Kubernetes cluster
 parameters:
+  key_name:
+    type: string
+    label: Key Name
+    description: Name of key-pair to be used for compute instance
   image:
     type: string
+    label: Image Name
     description: Image used for servers
   master_flavor:
     type: string
+    label: Master VM Flavor
     description: Flavor used by the masters
   node_flavor:
     type: string
+    label: Node VM Flavor
     description: Flavor used by the nodes
   private_net:
     type: string
+    label: Private Network Name
     description: Network used by the servers
   public_net:
     type: string
+    label: Public(External) Network Name
     description: Public IP used by the servers
   kube_version:
     type: string
     description: "Kubernetes version"
+    label: Kubernetes version
     default: 1.11.3
     constraints:
       - allowed_values:
         - 1.11.3
-        - 1.11.2
-        - 1.11.1
   kube_network:
     type: string
+    label: Kubernetes Network Plugin
     description: "Kubernetes Pod network plugin."
     default: flannel
     constraints:
@@ -37,10 +46,12 @@ parameters:
         - calico
   kube_bootstrap_token:
     type: string
+    label: Kubernetes TLS Bootstrap Token
     description: "Kubernetes bootstrap token"
     default: "b0f7b8.8d1767876297d85c"
   kube_node_count:
     type: string
+    label: Number of minion for Kubernetes
     description: "Number of node for Kubernetes"
     default: 2
 
@@ -77,25 +88,6 @@ resources:
         - protocol: udp
           port_range_min: 8472
           port_range_max: 8472
-       
-  keypair:
-    type: OS::Nova::KeyPair
-    properties:
-      save_private_key: true
-      name:
-        str_replace:
-          template: "%prefix%-keypair"
-          params:
-            "%prefix%": { get_attr: [prefix, output] }
-  
-  keypair_config:
-    type: OS::Heat::CloudConfig
-    properties:
-      cloud_config:
-        write_files:
-          - path: "/root/.ssh/id_rsa"
-            permissions: "0600"
-            content: { get_attr: [keypair, private_key] }
 
   kubeadm_init_config:
     type: OS::Heat::SoftwareConfig
@@ -129,38 +121,26 @@ resources:
       server:
         get_resource: k8s_master_node
 
-  kubeadm_join_config:
-    depends_on: kubeadm_init_config
-    type: OS::Heat::SoftwareConfig
+  run_join_config:
+    type: OS::Heat::CloudConfig
     properties:
-      inputs:
-        - name: master_ip
-        - name: bootstrap_token
-        - name: node_ips
-      group: script
-      config: |
-        #!/bin/bash
-        set -eux
-        sudo -i
-        for IP in $(echo ${node_ips} | grep -o "[0-9\.]*"); do
-          ssh -o StrictHostKeyChecking=no ubuntu@${IP} \
-          "sudo kubeadm join --token ${bootstrap_token} ${master_ip}:6443 --discovery-token-unsafe-skip-ca-verification"
-        done
-        
-  run_kubeadm_join:
-    depends_on:
-    - k8s_nodes
-    - run_kubeadm_init
-    type: OS::Heat::SoftwareDeployment
-    properties:
-      input_values:
-        master_ip: { get_attr: [k8s_master_node, first_address] }
-        bootstrap_token: { get_param: kube_bootstrap_token }
-        node_ips: { get_attr: [k8s_nodes, first_address] }
-      config:
-        get_resource: kubeadm_join_config
-      server:
-        get_resource: k8s_master_node
+      cloud_config:
+        write_files:
+          - path: "/opt/k8s/join"
+            permissions: "0700"
+            content:
+              str_replace:
+                template: |
+                  #!/bin/bash
+                  set -ux
+                  sudo kubeadm join --token %bootstrap_token% \
+                         %master_ip%:6443 \
+                         --discovery-token-unsafe-skip-ca-verification
+                params:
+                  "%bootstrap_token%": { get_param: kube_bootstrap_token }
+                  "%master_ip%": { get_attr: [k8s_master_node, first_address] }
+        runcmd:
+          - ./opt/k8s/join
 
   k8s_master_node:
     type: OS::Nova::Server
@@ -171,18 +151,18 @@ resources:
           params:
             "%prefix%": { get_attr: [prefix, output] }
       image: { get_param: image }
-      key_name: { get_resource: keypair }
+      key_name: { get_param: key_name }
       flavor: { get_param: master_flavor }
       networks:
       - network: { get_param: private_net }
       security_groups:
       - get_resource: kube_security_group
       user_data_format: SOFTWARE_CONFIG
-      user_data: { get_resource: keypair_config }
   
   k8s_nodes:
     depends_on:
     - k8s_master_node
+    - run_kubeadm_init
     type: OS::Heat::ResourceGroup
     properties:
       count: { get_param: kube_node_count }
@@ -195,13 +175,14 @@ resources:
               params:
                 "%prefix%": { get_attr: [prefix, output] }
           image: { get_param: image }
-          key_name: { get_resource: keypair }
+          key_name: { get_param: key_name }
           flavor: { get_param: node_flavor }
           networks:
           - network: { get_param: private_net }
           security_groups:
           - get_resource: kube_security_group
-          user_data_format: SOFTWARE_CONFIG
+          user_data_format: RAW
+          user_data: { get_resource: run_join_config }
   
   floating_ip:
     type: OS::Neutron::FloatingIP
@@ -231,6 +212,3 @@ outputs:
   floating_ip:
     description: Floating IP of master
     value: { get_attr: [floating_ip, floating_ip_address] }
-  private_key:
-    description: Private key of all nodes
-    value: { get_attr: [keypair, private_key] }
