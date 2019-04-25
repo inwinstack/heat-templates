@@ -1,4 +1,4 @@
-# Heat template for Kubeadm
+# Heat template for Kubeadm v1.13.5
 A Heat template to deploy a Kubernetes cluster on the OpenStack cloud.
 
 ## Quick Start
@@ -31,11 +31,14 @@ $ source openrc
 Set the variables in `env.yml` to reflect you need options:
 ```yaml
 parameters:
-  image: ubuntu-16.04-k8s
+  key_name: test
+  master_image: ubuntu-k8s-v1.13
+  node_image: ubuntu-k8s-v1.13
   master_flavor: m1.medium
   node_flavor: m1.medium
-  private_net: bc6b61a7-df3f-420e-8f72-5524269b851e
-  public_net: b164fae0-3dc3-4309-b464-a08d8aab8fef
+  private_net: private
+  public_net: public
+
 ```
 
 Now, just execute the following command to create the stack:
