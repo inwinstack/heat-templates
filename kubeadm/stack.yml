@@ -7,10 +7,12 @@ parameters:
     type: string
     label: Key Name
     description: Name of key-pair to be used for compute instance
-  image:
+  master_image:
     type: string
-    label: Image Name
-    description: Image used for servers
+    description: Image used for the master
+  node_image:
+    type: string
+    description: Image used for the node
   master_flavor:
     type: string
     label: Master VM Flavor
@@ -30,11 +32,10 @@ parameters:
   kube_version:
     type: string
     description: "Kubernetes version"
-    label: Kubernetes version
-    default: 1.11.3
+    default: 1.13.5
     constraints:
       - allowed_values:
-        - 1.11.3
+        - 1.13.5
   kube_network:
     type: string
     label: Kubernetes Network Plugin
@@ -43,7 +44,6 @@ parameters:
     constraints:
       - allowed_values:
         - flannel
-        - calico
   kube_bootstrap_token:
     type: string
     label: Kubernetes TLS Bootstrap Token
@@ -107,7 +107,7 @@ resources:
 
         sudo mkdir ~/.kube 
         sudo cp -rp /etc/kubernetes/admin.conf ~/.kube/config
-        sudo kubectl apply -f /opt/${network_plugin}/
+        sudo kubectl apply -f /opt/${network_plugin}.yml
     
   run_kubeadm_init:
     type: OS::Heat::SoftwareDeployment
@@ -150,7 +150,7 @@ resources:
           template: "%prefix%-master"
           params:
             "%prefix%": { get_attr: [prefix, output] }
-      image: { get_param: image }
+      image: { get_param: master_image }
       key_name: { get_param: key_name }
       flavor: { get_param: master_flavor }
       networks:
@@ -174,7 +174,7 @@ resources:
               template: "%prefix%-node-%index%"
               params:
                 "%prefix%": { get_attr: [prefix, output] }
-          image: { get_param: image }
+          image: { get_param: node_image }
           key_name: { get_param: key_name }
           flavor: { get_param: node_flavor }
           networks:
